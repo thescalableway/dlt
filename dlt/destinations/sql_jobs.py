@@ -217,6 +217,17 @@ class SqlMergeFollowupJob(SqlFollowupJob):
         return clauses
 
     @classmethod
+    def gen_partition_clause(
+        cls,
+        table: PreparedTableSchema,
+        sql_client: SqlClientBase[Any],
+        target_alias: str = "d",
+        staging_alias: str = "s",
+    ) -> str:
+        """Return an optional target partition predicate for merge deletes."""
+        return ""
+
+    @classmethod
     def gen_key_table_clauses(
         cls,
         root_table_name: str,
@@ -614,7 +625,9 @@ class SqlMergeFollowupJob(SqlFollowupJob):
                 )
                 # if no nested tables, just delete data from root table
                 for clause in key_table_clauses:
-                    sql.append(f"DELETE {clause}")
+                    sql.append(
+                        f"DELETE {clause}{cls.gen_partition_clause(root_table, sql_client)}"
+                    )
             else:
                 key_table_clauses = cls.gen_key_table_clauses(
                     root_table_name,
@@ -623,6 +636,10 @@ class SqlMergeFollowupJob(SqlFollowupJob):
                     merge_keys,
                     for_delete=False,
                 )
+                key_table_clauses = [
+                    f"{clause}{cls.gen_partition_clause(root_table, sql_client)}"
+                    for clause in key_table_clauses
+                ]
                 # use row_key or unique hint to create temp table with all identifiers to delete
                 row_key_column = escape_column_id(
                     cls.get_row_key_col(
@@ -760,6 +777,7 @@ class SqlMergeFollowupJob(SqlFollowupJob):
         deleted_cond: Optional[str],
         insert_only: bool = False,
         not_deleted_cond: Optional[str] = None,
+        partition_clause: str = "",
     ) -> List[str]:
         """Generate MERGE statement for upsert/insert-only on root table.
 
@@ -768,6 +786,7 @@ class SqlMergeFollowupJob(SqlFollowupJob):
         """
         sql: List[str] = []
         on_str = " AND ".join([f"d.{c} = s.{c}" for c in primary_keys])
+        on_str += partition_clause
         col_str = ", ".join(["{alias}" + c for c in root_table_column_names])
 
         if insert_only:
@@ -844,6 +863,7 @@ class SqlMergeFollowupJob(SqlFollowupJob):
                 deleted_cond,
                 insert_only=insert_only,
                 not_deleted_cond=not_deleted_cond,
+                partition_clause=cls.gen_partition_clause(root_table, sql_client),
             )
         )
 

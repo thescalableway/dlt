@@ -1,5 +1,7 @@
 import os
 import warnings
+from copy import deepcopy
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 from urllib.parse import urlparse
@@ -199,6 +201,55 @@ class BigQueryMergeJob(SqlMergeFollowupJob):
             for clause in key_clauses
         ]
 
+    @classmethod
+    def gen_partition_clause(
+        cls,
+        table: PreparedTableSchema,
+        sql_client: SqlClientBase[Any],
+        target_alias: str = "d",
+        staging_alias: str = "s",
+    ) -> str:
+        """Restrict delete-insert merges to partitions present in staging."""
+        partition_columns = list(
+            dict.fromkeys(
+                get_columns_names_with_prop(table, PARTITION_HINT)
+                + get_columns_names_with_prop(table, "partition")
+            )
+        )
+        if not partition_columns:
+            return ""
+        if len(partition_columns) > 1:
+            raise DestinationSchemaWillNotUpdate(
+                table["name"], partition_columns, "Partition requested for more than one column"
+            )
+
+        partition_column = partition_columns[0]
+        column = table["columns"][partition_column]
+        if column["data_type"] not in ("date", "timestamp"):
+            return ""
+
+        partition_values = column.get("partition_values")
+        if not isinstance(partition_values, list) or not partition_values:
+            return ""
+        try:
+            partition_dates = [date.fromisoformat(str(value)) for value in partition_values]
+        except ValueError as exc:
+            raise DestinationSchemaWillNotUpdate(
+                table["name"], partition_column, "partition_values must be YYYY-MM-DD values"
+            ) from exc
+
+        escaped_column = sql_client.escape_column_name(partition_column)
+        target_partition = (
+            f"DATE({target_alias}.{escaped_column})"
+            if column["data_type"] == "timestamp"
+            else f"{target_alias}.{escaped_column}"
+        )
+        literals = ", ".join(
+            f"DATE '{partition_day.isoformat()}'"
+            for partition_day in sorted(set(partition_dates))
+        )
+        return f" AND {target_partition} IN ({literals})"
+
 
 class BigQueryClient(SqlJobClientWithStagingDataset, SupportsStagingDestination):
     def __init__(
@@ -228,7 +279,34 @@ class BigQueryClient(SqlJobClientWithStagingDataset, SupportsStagingDestination)
     def _create_merge_followup_jobs(
         self, table_chain: Sequence[PreparedTableSchema]
     ) -> List[FollowupJobRequest]:
-        return [BigQueryMergeJob.from_table_chain(table_chain, self.sql_client)]
+        prepared_table_chain = deepcopy(table_chain)
+        root_table = prepared_table_chain[0]
+        partition_columns = list(
+            dict.fromkeys(
+                get_columns_names_with_prop(root_table, PARTITION_HINT)
+                + get_columns_names_with_prop(root_table, "partition")
+            )
+        )
+        if len(partition_columns) == 1:
+            partition_column = partition_columns[0]
+            column = root_table["columns"][partition_column]
+            if column["data_type"] in ("date", "timestamp"):
+                _, staging_table_name = self.sql_client.get_qualified_table_names(
+                    root_table["name"]
+                )
+                escaped_column = self.sql_client.escape_column_name(partition_column)
+                partition_expression = (
+                    f"DATE({escaped_column})"
+                    if column["data_type"] == "timestamp"
+                    else escaped_column
+                )
+                values = self.sql_client.execute_sql(
+                    f"SELECT DISTINCT {partition_expression} "
+                    f"FROM {staging_table_name} WHERE {escaped_column} IS NOT NULL"
+                )
+                column["partition_values"] = [row[0].isoformat() for row in values or []]
+
+        return [BigQueryMergeJob.from_table_chain(prepared_table_chain, self.sql_client)]
 
     def _use_atomic_replace(self, table: PreparedTableSchema) -> bool:
         """Whether `table` is replaced with a single atomic WRITE_TRUNCATE_DATA load job.
