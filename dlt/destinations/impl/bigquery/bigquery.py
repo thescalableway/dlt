@@ -93,6 +93,11 @@ class _BigQueryLoadJobBase(RunnableLoadJob):
         try:
             self._bq_load_job = self._job_client._create_load_job(self._load_table, self._file_path)
             self._created_job = True
+            logger.debug(
+                "Submitted BigQuery load job %s for dlt job %s",
+                self._bq_load_job.job_id,
+                self._file_name,
+            )
         except api_core_exceptions.GoogleAPICallError as gace:
             reason = BigQuerySqlClient._get_reason_from_errors(gace)
             if reason == "notFound":
@@ -105,6 +110,11 @@ class _BigQueryLoadJobBase(RunnableLoadJob):
                 self._resumed_job = True
                 logger.info(
                     f"Found existing bigquery job for job {self._file_name}, will resume job."
+                )
+                logger.debug(
+                    "Resuming BigQuery load job %s for dlt job %s",
+                    self._bq_load_job.job_id,
+                    self._file_name,
                 )
             elif reason in BQ_TERMINAL_REASONS:
                 # google.api_core.exceptions.BadRequest - will not be processed ie bad job name

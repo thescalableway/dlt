@@ -239,6 +239,7 @@ class BigQuerySqlClient(SqlClientBase[bigquery.Client], DBTransaction):
             curr = conn.cursor()
             # if session exists give it a preference
             curr.execute(query, db_args, job_config=self._session_query or self._default_query)
+            logger.debug("Submitted BigQuery query job %s", curr.query_job.job_id)
             yield BigQueryDBApiCursorImpl(curr)
         finally:
             if conn:
