@@ -1,30 +1,30 @@
+from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
 from typing import (
+    TYPE_CHECKING,
     Any,
     AnyStr,
     ClassVar,
-    Iterator,
     List,
     Optional,
-    Sequence,
-    Generator,
-    TYPE_CHECKING,
     Union,
 )
 
-import google.cloud.bigquery as bigquery  # noqa: I250
 from google.api_core import exceptions as api_core_exceptions
+from google.cloud import bigquery  # noqa: I250
 from google.cloud import exceptions as gcp_exceptions
 from google.cloud.bigquery import dbapi as bq_dbapi
-from google.cloud.bigquery.dbapi import Connection as DbApiConnection, Cursor as BQDbApiCursor
+from google.cloud.bigquery.dbapi import Connection as DbApiConnection
+from google.cloud.bigquery.dbapi import Cursor as BQDbApiCursor
 from google.cloud.bigquery.dbapi import exceptions as dbapi_exceptions
 
 from dlt.common import logger
 from dlt.common.configuration.specs import (
-    GcpServiceAccountCredentialsWithoutDefaults,
     GcpOAuthCredentials,
+    GcpServiceAccountCredentialsWithoutDefaults,
 )
 from dlt.common.destination import DestinationCapabilitiesContext
+from dlt.common.destination.dataset import DBApiCursor
 from dlt.common.typing import StrAny
 from dlt.destinations.exceptions import (
     DatabaseTerminalException,
@@ -38,7 +38,6 @@ from dlt.destinations.sql_client import (
     raise_open_connection_error,
 )
 from dlt.destinations.typing import DBApi, DBTransaction
-from dlt.common.destination.dataset import DBApiCursor
 
 if TYPE_CHECKING:
     from pandas import DataFrame
@@ -239,7 +238,9 @@ class BigQuerySqlClient(SqlClientBase[bigquery.Client], DBTransaction):
             curr = conn.cursor()
             # if session exists give it a preference
             curr.execute(query, db_args, job_config=self._session_query or self._default_query)
-            logger.debug("Submitted BigQuery query job %s", curr.query_job.job_id)
+            statement = str(query).lstrip().split(None, 1)[0].upper()
+            operation = "MERGE query" if statement == "MERGE" else "query"
+            logger.info("Submitted BigQuery %s job %s", operation, curr.query_job.job_id)
             yield BigQueryDBApiCursorImpl(curr)
         finally:
             if conn:
