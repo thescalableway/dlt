@@ -248,7 +248,7 @@ class BigQuerySqlClient(SqlClientBase[bigquery.Client], DBTransaction):
             # BigQuery executes multi-statement SQL as a script. In that case the DBAPI cursor
             # exposes the script job, while the actual MERGE is a child job. Log child IDs after
             # the cursor has finished so the native MERGE job is available in orchestration logs.
-            if query_job is not None and getattr(query_job, "statement_type", None) == "SCRIPT":
+            if query_job is not None and ";" in str(query):
                 try:
                     query_job.result()
                     for child_job in self._client.list_jobs(parent_job=query_job.job_id):

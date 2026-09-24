@@ -107,7 +107,7 @@ def test_script_child_job_id_is_logged(
 ) -> None:
     connection = Mock()
     cursor = Mock(description=None)
-    cursor.query_job = Mock(job_id="script_job", statement_type="SCRIPT")
+    cursor.query_job = Mock(job_id="script_job", statement_type=None)
     connection.cursor.return_value = cursor
 
     client = bigquery_sql_client.BigQuerySqlClient.__new__(bigquery_sql_client.BigQuerySqlClient)
