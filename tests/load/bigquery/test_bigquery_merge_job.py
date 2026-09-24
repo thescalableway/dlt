@@ -1,4 +1,5 @@
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -6,6 +7,7 @@ from dlt.common.destination import PreparedTableSchema
 from dlt.destinations.exceptions import DestinationSchemaWillNotUpdate
 from dlt.destinations.impl.bigquery.bigquery import BigQueryMergeJob
 from dlt.destinations.impl.bigquery.bigquery_adapter import PARTITION_HINT
+from dlt.destinations.impl.bigquery import sql_client as bigquery_sql_client
 from dlt.destinations.sql_jobs import SqlMergeFollowupJob
 
 
@@ -98,3 +100,28 @@ def test_default_sql_merge_job_does_not_add_partition_clause() -> None:
     clause = SqlMergeFollowupJob.gen_partition_clause(_table("date"), _SqlClient())  # type: ignore[arg-type]
 
     assert clause == ""
+
+
+def test_script_child_job_id_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = Mock()
+    cursor = Mock(description=None)
+    cursor.query_job = Mock(job_id="script_job", statement_type="SCRIPT")
+    connection.cursor.return_value = cursor
+
+    client = bigquery_sql_client.BigQuerySqlClient.__new__(bigquery_sql_client.BigQuerySqlClient)
+    client._client = Mock()
+    client._client.list_jobs.return_value = [Mock(job_id="merge_job")]
+    client._session_query = None
+    client._default_query = Mock()
+    monkeypatch.setattr(bigquery_sql_client, "DbApiConnection", Mock(return_value=connection))
+    info = Mock()
+    monkeypatch.setattr(bigquery_sql_client.logger, "info", info)
+
+    with client.execute_query("CREATE TABLE x; MERGE INTO x USING y ON x.id = y.id"):
+        pass
+
+    info.assert_any_call(
+        "Submitted BigQuery script child job %s (parent %s)", "merge_job", "script_job"
+    )

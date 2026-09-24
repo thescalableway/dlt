@@ -233,16 +233,36 @@ class BigQuerySqlClient(SqlClientBase[bigquery.Client], DBTransaction):
     def execute_query(self, query: AnyStr, *args: Any, **kwargs: Any) -> Iterator[DBApiCursor]:
         conn: DbApiConnection = None
         db_args = args or (kwargs or None)
+        query_job: Any = None
         try:
             conn = DbApiConnection(client=self._client)
             curr = conn.cursor()
             # if session exists give it a preference
             curr.execute(query, db_args, job_config=self._session_query or self._default_query)
+            query_job = curr.query_job
             statement = str(query).lstrip().split(None, 1)[0].upper()
             operation = "MERGE query" if statement == "MERGE" else "query"
-            logger.info("Submitted BigQuery %s job %s", operation, curr.query_job.job_id)
+            logger.info("Submitted BigQuery %s job %s", operation, query_job.job_id)
             yield BigQueryDBApiCursorImpl(curr)
         finally:
+            # BigQuery executes multi-statement SQL as a script. In that case the DBAPI cursor
+            # exposes the script job, while the actual MERGE is a child job. Log child IDs after
+            # the cursor has finished so the native MERGE job is available in orchestration logs.
+            if query_job is not None and getattr(query_job, "statement_type", None) == "SCRIPT":
+                try:
+                    query_job.result()
+                    for child_job in self._client.list_jobs(parent_job=query_job.job_id):
+                        logger.info(
+                            "Submitted BigQuery script child job %s (parent %s)",
+                            child_job.job_id,
+                            query_job.job_id,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Could not enumerate child jobs for BigQuery script %s",
+                        query_job.job_id,
+                        exc_info=True,
+                    )
             if conn:
                 # will close all cursors
                 conn.close()
